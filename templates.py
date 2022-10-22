@@ -2,54 +2,67 @@ import numpy as np
 from scipy.linalg import cossin, eig
 
 from qiskit.circuit import ParameterVector
+from qiskit.algorithms.optimizers import L_BFGS_B, Optimizer
 from qiskit import QuantumCircuit
 
+# Approximate Circuit Compiling Problem
+#TODO: maybe inherit from some abstract class
+class AQCP:
+    def __init__(self, U: np.ndarray, template: str, depth: int, connectity: str) -> None:
+        
+        self.target_matrix = U
+        self.template = template
+        self.depth = depth
+        self.connectivity = connectity
+        self.num_qubits = int(np.log2(len(U)))
 
-# Cartan template
-def CART(n: int) -> tuple:
-    qc = QuantumCircuit(n)
-    ct = _cartan_network(n)
-    L = ct.shape[1]
-    params = ParameterVector('theta', length=4*L)
-    for l,(c,t) in enumerate(zip(ct[0], ct[1])):
-        p = list(range(4*(l+1)))[-4:]
-        qc.cx(c,t)
-        qc.ry(params[p[0]], t)
-        qc.rz(params[p[1]], t)
-        qc.ry(params[p[2]], c)
-        qc.rx(params[p[3]], c)
-    return (qc, params)
+        # template and depth determine number of parameters
+        if template == "cart":
+            # fixed depth and connectivity
+            cnots = _cartan_network(self.num_qubits) 
+        if template == "spin":
+            # fixed connectivity
+            cnots = _spin_network(self.num_qubits, depth) 
+        if template == "sequ":
+            links = _get_connectivity(self.num_qubits, connectivity=connectity)
+            cnots = _sequential_network(self.num_qubits, links, depth)
+        
+        # number of CNOT units with 4 parameters each
+        L = cnots.shape[1]
+        self.params = ParameterVector('theta', length=4*L)
+        self._cnots = cnots
 
+        # construct the circuit using the CNOT template
+        qc = QuantumCircuit(self.num_qubits)
+        for l,(c,t) in enumerate(zip(self._cnots[0], self._cnots[1])):
+            p = list(range(4*(l+1)))[-4:]
+            qc.cx(c,t)
+            qc.ry(self.params[p[0]], t)
+            qc.rz(self.params[p[1]], t)
+            qc.ry(self.params[p[2]], c)
+            qc.rx(self.params[p[3]], c)
+        self.ansatz = qc            
 
-# Spin template
-def SPIN(n: int, L: int) -> tuple:
-    qc = QuantumCircuit(n)
-    ct = _spin_network(n, L)
-    params = ParameterVector('theta', length=4*L)
-    for l,(c,t) in enumerate(zip(ct[0], ct[1])):
-        p = list(range(4*(l+1)))[-4:]
-        qc.cx(c,t)
-        qc.ry(params[p[0]], t)
-        qc.rz(params[p[1]], t)
-        qc.ry(params[p[2]], c)
-        qc.rx(params[p[3]], c)
-    return (qc, params)
+    def objective(self, thetas: np.ndarray) -> float:
+        return
 
+    # compute gradients via the parameter-shift rule
+    def gradients(self, thetas: np.ndarray) -> np.ndarray:
+        return
 
-# Sequential template
-def SEQU(n: int, L: int, topology: str) -> tuple:
-    qc = QuantumCircuit(n)
-    links = _get_connectivity(n, connectivity=topology)
-    ct = _sequential_network(n, links, L)
-    params = ParameterVector('theta', length=4*L)
-    for l,(c,t) in enumerate(zip(ct[0], ct[1])):
-        p = list(range(4*(l+1)))[-4:]
-        qc.cx(c,t)
-        qc.ry(params[p[0]], t)
-        qc.rz(params[p[1]], t)
-        qc.ry(params[p[2]], c)
-        qc.rx(params[p[3]], c)
-    return (qc, params)
+    # main optimization routine    
+    def compile(self) -> None:
+
+        angles = np.random.uniform(0, 2*np.pi, size=len(self.params))
+
+        optimizer = L_BFGS_B(maxiter=1000)
+        result = optimizer.minimize(
+            fun=self.objective,
+            x0=angles,
+            jac=self.gradients
+        )
+        return
+
 
 
 # Cartian structure with angles initialized from QSD
@@ -57,9 +70,10 @@ from qiskit.circuit.library.standard_gates import CRYGate, CRZGate
 from qiskit.quantum_info import OneQubitEulerDecomposer
 from qiskit.quantum_info.synthesis.two_qubit_decompose import TwoQubitWeylDecomposition
 from qiskit.compiler import transpile
-def QSD(U, do_transpile=False) -> QuantumCircuit:
- 
-    #FIXME: angles 
+def QSD(U, cleanup=False) -> QuantumCircuit:
+
+    #FIXME: angles; also I think the paper used uniformlly-controlled gates unlike Qiskit  
+
     n = int(np.log2(len(U)));
     d = len(U)/2
 
@@ -94,7 +108,7 @@ def QSD(U, do_transpile=False) -> QuantumCircuit:
     qc.append(CRZGate(rz2_angles[1]).control(n-2), qargs=multiplexrs)
     qc.append(QSD(U4), qargs=unitaries)
 
-    if do_transpile:
+    if cleanup:
         qc = transpile(qc, 
                     basis_gates=['cx','rx','ry','u1'],
                     optimization_level=3, 
@@ -108,12 +122,13 @@ def demultiplex(u1, u2):
             left=True,
             right=True)
     angles = -2*1j*np.log(D) # entires in D have form exp(j*theta/2)?
-    # print(angles)
     return V, W, angles.real 
 
 
 # primitives adapted from:
 # https://qiskit.org/documentation/_modules/qiskit/transpiler/synthesis/aqc/cnot_structures.html#make_cnot_network
+
+#TODO: chimera?
 def _get_connectivity(num_qubits: int, connectivity: str) -> dict:
     """
         connectivity: type of connectivity structure, ``{"full", "line", "star"}``.
