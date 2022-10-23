@@ -4,6 +4,7 @@ from numpy import linalg as la
 from qiskit.circuit import ParameterVector
 from qiskit.algorithms.optimizers import L_BFGS_B
 from qiskit import QuantumCircuit
+from qiskit.quantum_info import Operator
 
 from templates import cartan_network, spin_network, sequential_network, get_connectivity
 from operations import ry_matrix, rz_matrix, rx_matrix, place_unitary, place_cnot
@@ -98,7 +99,7 @@ class Objective:
             circuit_matrix = np.dot(cnot_matrix, rotation_matrix)
 
             # compute error
-            error = 0.5 * (la.norm(circuit_matrix - self._target_matrix, "fro") ** 2)
+            error = 0.5 * (la.norm(circuit_matrix - self.target, "fro") ** 2)
 
             # cache computations for gradient
             self._last_thetas = thetas
@@ -203,7 +204,7 @@ class Objective:
                 der_circuit_matrix = np.dot(der_cnot_matrix, self._rotation_matrix)
                 # we compute the partial derivative of the cost function
                 der[i + theta_index] = -np.real(
-                    np.trace(np.dot(der_circuit_matrix.conj().T, self._target_matrix))
+                    np.trace(np.dot(der_circuit_matrix.conj().T, self.target))
                 )
 
         # now we compute the partial derivatives in the rotation part
@@ -232,7 +233,7 @@ class Objective:
             der_circuit_matrix = np.dot(self._cnot_matrix, der_rotation_matrix)
             # we compute the partial derivative of the cost function
             der[4 * num_cnots + i] = -np.real(
-                np.trace(np.dot(der_circuit_matrix.conj().T, self._target_matrix))
+                np.trace(np.dot(der_circuit_matrix.conj().T, self.target))
             )
 
         return der
@@ -241,13 +242,13 @@ class Objective:
 
 # Approximate Circuit Compiling Problem
 class AQCP(Objective):
-    def __init__(self, U: np.ndarray, template: str, depth: int, connectity: str) -> None:
+    def __init__(self, target: np.ndarray, template: str, depth: int, connectity: str) -> None:
         super().__init__
 
-        self.target_matrix = U
+        self.target = target
         self.template = template
         self.connectivity = connectity
-        self._num_qubits = int(np.log2(len(U)))
+        self._num_qubits = int(np.log2(len(target)))
 
         # template and depth determine number of parameters
         if template == "cart":
@@ -260,26 +261,32 @@ class AQCP(Objective):
             links = get_connectivity(self._num_qubits, connectivity=connectity)
             cnots = sequential_network(self._num_qubits, links, depth)
         
-        # number of CNOT units with 4 parameters each
         self.num_cnots = cnots.shape[1]
-        self.params = ParameterVector('theta', length=4*cnots.shape[1])
         self._cnots = cnots
 
-    # construct the circuit using the CNOT template
+    # construct the circuit ansatz
     def build(self):
+    
+        # 3 initial rotations for each qubit, then 4 for each CNOT unit
+        params = ParameterVector('theta', length=4*self.num_cnots+3*self._num_qubits)
         qc = QuantumCircuit(self._num_qubits)
 
-        #TODO: make sure my parameter labeling matches with Objective class
+        for q in range(self._num_qubits):
+            theta_index = 4 * self.num_cnots + 3 * q
+            qc.rz(params[0+theta_index], q)
+            qc.ry(params[1+theta_index], q)
+            qc.rz(params[2+theta_index], q)
 
         for l,(c,t) in enumerate(zip(self._cnots[0], self._cnots[1])):
             p = list(range(4*(l+1)))[-4:]
             qc.cx(c,t)
-            qc.ry(self.params[p[0]], t)
-            qc.rz(self.params[p[1]], t)
-            qc.ry(self.params[p[2]], c)
-            qc.rx(self.params[p[3]], c)
-
+            qc.ry(params[p[0]], t)
+            qc.rz(params[p[1]], t)
+            qc.ry(params[p[2]], c)
+            qc.rx(params[p[3]], c)
+        
         self.ansatz = qc 
+        self.params = params
 
     # main optimization routine    
     def compile(self) -> None:
@@ -288,13 +295,17 @@ class AQCP(Objective):
 
         angles = np.random.uniform(0, 2*np.pi, size=len(self.params))
 
-        optimizer = L_BFGS_B(maxiter=1000)
+        optimizer = L_BFGS_B(maxiter=1000, iprint=50)
         result = optimizer.minimize(
             fun=self.objective,
             x0=angles,
             jac=self.gradient
         )
 
-        self.ansatz.assign_parameters({self.params, result.x}, inplace=True)
+        self.ansatz.assign_parameters({self.params: result.x}, inplace=True)
+        # print(self.ansatz)
+        self.compiled_matrix = Operator(self.ansatz).data
+
+
 
 
