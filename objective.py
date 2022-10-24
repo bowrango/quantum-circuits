@@ -1,17 +1,23 @@
+# This code is part of Qiskit.
+#
+# (C) Copyright IBM 2021.
+#
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
+
 import numpy as np
 from numpy import linalg as la
 
-from qiskit.circuit import ParameterVector
-from qiskit.algorithms.optimizers import L_BFGS_B
-from qiskit import QuantumCircuit
-from qiskit.quantum_info import Operator
-
-from templates import cartan_network, spin_network, sequential_network, get_connectivity
 from operations import ry_matrix, rz_matrix, rx_matrix, place_unitary, place_cnot
 
 # wrapper for gradient descent computations using CNOT units 
 class Objective:
-    def __init__(self, num_qubits: int, cnots: np.ndarray) -> None:
+    def __init__(self) -> None:
         # last objective computations to be re-used by gradient
         self._last_thetas = None
         self._cnot_right_collection = None
@@ -99,6 +105,7 @@ class Objective:
             circuit_matrix = np.dot(cnot_matrix, rotation_matrix)
 
             # compute error
+            #TODO: replace this with loss function and add LASSO
             error = 0.5 * (la.norm(circuit_matrix - self.target, "fro") ** 2)
 
             # cache computations for gradient
@@ -237,75 +244,3 @@ class Objective:
             )
 
         return der
-
-
-
-# Approximate Circuit Compiling Problem
-class AQCP(Objective):
-    def __init__(self, target: np.ndarray, template: str, depth: int, connectity: str) -> None:
-        super().__init__
-
-        self.target = target
-        self.template = template
-        self.connectivity = connectity
-        self._num_qubits = int(np.log2(len(target)))
-
-        # template and depth determine number of parameters
-        if template == "cart":
-            # fixed depth and connectivity
-            cnots = cartan_network(self._num_qubits) 
-        if template == "spin":
-            # fixed connectivity
-            cnots = spin_network(self._num_qubits, depth) 
-        if template == "sequ":
-            links = get_connectivity(self._num_qubits, connectivity=connectity)
-            cnots = sequential_network(self._num_qubits, links, depth)
-        
-        self.num_cnots = cnots.shape[1]
-        self._cnots = cnots
-
-    # construct the circuit ansatz
-    def build(self):
-    
-        # 3 initial rotations for each qubit, then 4 for each CNOT unit
-        params = ParameterVector('theta', length=4*self.num_cnots+3*self._num_qubits)
-        qc = QuantumCircuit(self._num_qubits)
-
-        for q in range(self._num_qubits):
-            theta_index = 4 * self.num_cnots + 3 * q
-            qc.rz(params[0+theta_index], q)
-            qc.ry(params[1+theta_index], q)
-            qc.rz(params[2+theta_index], q)
-
-        for l,(c,t) in enumerate(zip(self._cnots[0], self._cnots[1])):
-            p = list(range(4*(l+1)))[-4:]
-            qc.cx(c,t)
-            qc.ry(params[p[0]], t)
-            qc.rz(params[p[1]], t)
-            qc.ry(params[p[2]], c)
-            qc.rx(params[p[3]], c)
-        
-        self.ansatz = qc 
-        self.params = params
-
-    # main optimization routine    
-    def compile(self) -> None:
-
-        self.build()
-
-        angles = np.random.uniform(0, 2*np.pi, size=len(self.params))
-
-        optimizer = L_BFGS_B(maxiter=1000, iprint=50)
-        result = optimizer.minimize(
-            fun=self.objective,
-            x0=angles,
-            jac=self.gradient
-        )
-
-        self.ansatz.assign_parameters({self.params: result.x}, inplace=True)
-        # print(self.ansatz)
-        self.compiled_matrix = Operator(self.ansatz).data
-
-
-
-

@@ -2,8 +2,6 @@ import numpy as np
 from scipy.linalg import cossin, eig
 from qiskit import QuantumCircuit
 
-#TODO: make this into a class which AQCP can inherit from?
-
 # Cartian structure with angles initialized from QSD
 from qiskit.circuit.library.standard_gates import CRYGate, CRZGate
 from qiskit.quantum_info import OneQubitEulerDecomposer
